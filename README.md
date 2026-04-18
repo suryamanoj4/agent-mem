@@ -10,21 +10,21 @@ In a multi-agent workflow, agents often suffer from "context fragmentation"—th
 
 ## 🏗️ Architecture
 
-- **Core Engine**: Written in Go for high concurrency and low latency.
-- **Storage**: SQLite in WAL (Write-Ahead Logging) mode for robust, concurrent persistence.
-- **Payloads**: Human-readable Markdown (.md) mirrored from the database for easy auditing.
+- **Core Engine (MemoryService)**: A "Deep Module" designed in Go that encapsulates all logic, locking, and search functionality behind a clean, testable boundary.
+- **Storage**: SQLite in WAL (Write-Ahead Logging) mode with asynchronous Markdown mirroring via a background syncer.
 - **Search**: SQLite FTS5 for blazing-fast natural language retrieval.
 - **Interfaces**: 
-  - **MCP**: Native integration for premier coding agents (Claude, Cursor, etc.).
-  - **REST**: Lightweight shim for custom scripts and legacy models.
-- **Privacy**: Local-first, air-gapped design with strict `.mcpignore` support.
+  - **MCP**: Native integration for premier coding agents (Claude, Cursor, etc.), acting as a thin transport layer.
+  - **REST**: Lightweight shim for custom scripts, sharing the same core service.
+- **Privacy**: Mandatory "Security Middleware" that filters context before it reaches persistence.
 
 ## 📂 Project Structure
 
 - `cmd/agent-mem`: CLI entrypoint for session management and daemon orchestration.
-- `pkg/broker`: MCP and REST server implementations.
-- `pkg/store`: Persistence layer (SQLite + Markdown mirroring + FTS5).
-- `pkg/privacy`: Privacy guardrails and `.mcpignore` logic.
+- `pkg/service`: The central "Deep Brain" of the broker.
+- `pkg/broker`: Transport-only wrappers for MCP and REST.
+- `pkg/store`: Persistence layer with asynchronous file syncing.
+- `pkg/privacy`: Privacy guardrails and ignore logic.
 - `pkg/api`: Shared types and interface contracts.
 
 ## 🛠️ Getting Started

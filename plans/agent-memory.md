@@ -7,14 +7,16 @@
 Durable decisions that apply across all phases:
 
 - **Path Schema**: `~/.config/agent-broker/` for the database and `sessions/<session_id>/` for Markdown logs.
-- **Database**: SQLite in WAL mode with FTS5 enabled.
-- **Payload Format**: Human-readable Markdown (.md) mirrored from the relational database.
-- **Concurrency**: Go routines with internal mutexes for LWW (Last-Write-Wins) and sequential queuing.
-- **Interfaces**: MCP (JSON-RPC over stdio) and REST (HTTP/JSON).
+- **Database**: SQLite in WAL mode with FTS5 enabled, using `github.com/mattn/go-sqlite3`.
+- **MemoryService (Session Factory)**: The `MemoryService` interface returns a `Session` object. `Session` methods (`Log`, `Ask`, `Lock`) hide the session-id plumbing.
+- **Shadow Sync (Background Buffer)**: The `pkg/store` uses a Go channel and background worker to asynchronously mirror SQLite writes to Markdown logs.
+- **Privacy (Interceptor Middleware)**: A mandatory internal layer in `pkg/service` that scrubs payloads using `github.com/go-git/go-git/v5` ignore logic before persistence.
+- **Interfaces**: MCP (via `github.com/mark3labs/mcp-go`) and REST (via `github.com/go-chi/chi/v5`) act as "Dumb Transports."
+- **CLI Framework**: `github.com/spf13/cobra` for robust subcommand management.
 
 ---
 
-## Phase 1: Foundations & The First Append
+## Phase 1: Deep Storage Foundations (Service + Store + Sync)
 
 **User stories**: 
 - 1. As a developer, I want to initialize a named session...
@@ -23,18 +25,18 @@ Durable decisions that apply across all phases:
 
 ### What to build
 
-A minimal Go CLI that can initialize a session and a core persistence layer that writes log entries to both SQLite and a mirrored Markdown file. This phase establishes the directory structure in `~/.config/` and validates the end-to-end "Write to DB -> Sync to File" flow.
+The core "Deep Brain": `pkg/service` and `pkg/store`. This phase implements the **Session Factory** interface and the **Background Buffer** for Markdown mirroring. It establishes the SQLite schema and the background synchronization worker.
 
 ### Acceptance criteria
 
-- [ ] `agent-mem init <session_name>` creates the necessary directories and SQLite DB.
-- [ ] Internal `Store` module can append a log entry.
-- [ ] Appended entries appear in the SQLite `memory_logs` table.
-- [ ] Appended entries are immediately written to a human-readable `.md` file in the session directory.
+- [ ] `MemoryService.Connect(id)` returns a valid `Session` object.
+- [ ] `Session.Log(entry)` successfully commits to SQLite via `pkg/store`.
+- [ ] The background worker asynchronously mirrors the log entry to the correct `.md` file.
+- [ ] Verified: High-frequency appends do not block the main execution thread.
 
 ---
 
-## Phase 2: The MCP Interface
+## Phase 2: The Dumb Transport (MCP via Service)
 
 **User stories**:
 - 2. As a developer, I want my agents to connect to the broker via MCP...
@@ -42,13 +44,13 @@ A minimal Go CLI that can initialize a session and a core persistence layer that
 
 ### What to build
 
-The MCP server implementation. It will run as a daemon (over stdio) and expose the `append_session_log` tool. This allows any MCP-compliant agent to write to the unified memory.
+The MCP server implementation using `mcp-go`. In this version, `pkg/broker` is a thin, logic-free wrapper that only translates MCP requests into `MemoryService` calls.
 
 ### Acceptance criteria
 
-- [ ] `agent-mem start --session <id>` launches an MCP server on stdio.
-- [ ] MCP clients can list the `append_session_log` tool.
-- [ ] Calling the tool via MCP successfully persists data to the Phase 1 storage layer.
+- [ ] `agent-mem start --session <id>` launches the MCP server.
+- [ ] MCP tool calls are successfully routed to the `MemoryService`.
+- [ ] The broker contains zero business logic—only request translation.
 
 ---
 

@@ -25,15 +25,17 @@ Developers using multiple coding agents (e.g., a frontend agent, a backend agent
 ### Architecture
 - **Language:** Go for high concurrency and low-latency performance.
 - **Daemon:** A single binary acting as an MCP Server (stdio) and a REST Server (localhost).
+- **Core Engine (MemoryService):** A "Deep Module" that encapsulates session management, FTS5 search, advisory locking, and privacy filtering behind a minimal interface.
 - **Storage Engine:** SQLite in WAL (Write-Ahead Logging) mode for concurrent read/write operations.
-- **Payload Mirroring:** Every memory entry is mirrored from SQLite to physical `.md` files in `~/.config/agent-broker/sessions/<session_id>/`.
-- **Search:** SQLite FTS5 extension for blazing-fast full-text search over memory logs.
+- **Asynchronous Syncing:** Every memory entry is mirrored from SQLite to physical `.md` files in `~/.config/agent-broker/sessions/<session_id>/` via an internal background worker to avoid blocking agent execution.
+- **Security Middleware:** All data ingestion passes through a mandatory `.mcpignore` filter integrated directly into the storage layer.
 
 ### Modules
 - **`cmd/agent-mem`**: CLI entrypoint for session orchestration (`start`, `init`, `stop`).
-- **`pkg/broker`**: Handles MCP JSON-RPC and REST HTTP requests.
-- **`pkg/store`**: Manages SQLite, FTS5, and Markdown file synchronization.
-- **`pkg/privacy`**: Implements `.mcpignore` logic to filter sensitive paths.
+- **`pkg/service`**: The "Deep Brain" of the project. A unified `MemoryService` that handles logic, locking, and search.
+- **`pkg/store`**: Manages SQLite/FTS5 persistence and asynchronous Markdown mirroring.
+- **`pkg/privacy`**: Internal logic for `.mcpignore` filtering, used as a mandatory middleware by the `MemoryService`.
+- **`pkg/broker`**: Pure transport wrappers (MCP and REST) that delegate all logic to the `MemoryService`.
 
 ### Coordination
 - **Session ID:** Agents are explicitly passed a `session_id` at startup.
