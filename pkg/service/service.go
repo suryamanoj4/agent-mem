@@ -3,30 +3,34 @@ package service
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
 	"agent-memory/pkg/api"
+	"agent-memory/pkg/privacy"
 )
 
-// memoryService implements api.MemoryService.
 type memoryService struct {
-	store api.Store
-	
+	store          api.Store
+	privacyFilter  *privacy.Filter
+
 	mu       sync.RWMutex
 	sessions map[string]*session
-	
-	// Global lock manager for simplicity in Phase 1
-	locksMu sync.Mutex
-	locks   map[string]string // path -> ownerID
 }
 
-// NewMemoryService creates a new instance of the deep MemoryService.
 func NewMemoryService(store api.Store) api.MemoryService {
 	return &memoryService{
 		store:    store,
 		sessions: make(map[string]*session),
-		locks:    make(map[string]string),
+	}
+}
+
+func NewMemoryServiceWithFilter(store api.Store, filter *privacy.Filter) api.MemoryService {
+	return &memoryService{
+		store:         store,
+		privacyFilter: filter,
+		sessions:      make(map[string]*session),
 	}
 }
 
@@ -50,7 +54,6 @@ func (s *memoryService) Close() error {
 	return s.store.Close()
 }
 
-// session implements api.Session.
 type session struct {
 	id      string
 	service *memoryService
@@ -61,7 +64,11 @@ func (s *session) ID() string {
 }
 
 func (s *session) Log(ctx context.Context, role, content string) error {
-	// In Phase 5, we will add the privacy interceptor here.
+	if s.service.privacyFilter != nil {
+		if blocked, pattern := s.service.privacyFilter.IsBlocked(content); blocked {
+			return fmt.Errorf("content blocked by .mcpignore rule: %s", pattern)
+		}
+	}
 	entry := api.LogEntry{
 		SessionID: s.id,
 		Role:      role,
@@ -75,33 +82,27 @@ func (s *session) Ask(ctx context.Context, query string) ([]api.LogEntry, error)
 	return s.service.store.Search(ctx, s.id, query)
 }
 
-func (s *session) Lock(ctx context.Context, path string) (func() error, error) {
-	s.service.locksMu.Lock()
-	defer s.service.locksMu.Unlock()
-
-	// Use a dummy owner ID for now; in a real scenario, this might come from the agent context
-	ownerID := "agent-context" 
-
-	if existingOwner, locked := s.service.locks[path]; locked {
-		return nil, fmt.Errorf("file is already locked by %s", existingOwner)
+func (s *session) Lock(ctx context.Context, path string, owner string, ttl time.Duration) (func() error, error) {
+	if err := s.service.store.AcquireLock(ctx, s.id, path, owner, ttl); err != nil {
+		return nil, err
 	}
+	return func() error {
+		return s.service.store.ReleaseLock(ctx, s.id, path)
+	}, nil
+}
 
-	s.service.locks[path] = ownerID
-	
-	unlockFunc := func() error {
-		s.service.locksMu.Lock()
-		defer s.service.locksMu.Unlock()
-		delete(s.service.locks, path)
-		return nil
-	}
-
-	return unlockFunc, nil
+func (s *session) ReleaseLock(ctx context.Context, path string) error {
+	return s.service.store.ReleaseLock(ctx, s.id, path)
 }
 
 func (s *session) GetLockStatus(ctx context.Context, path string) (bool, string, error) {
-	s.service.locksMu.Lock()
-	defer s.service.locksMu.Unlock()
+	return s.service.store.GetLockStatus(ctx, path)
+}
 
-	owner, locked := s.service.locks[path]
-	return locked, owner, nil
+func (s *session) Compact(ctx context.Context) (int64, error) {
+	return s.service.store.ArchiveEntries(ctx, s.id)
+}
+
+func (s *session) Export(ctx context.Context, w io.Writer) error {
+	return s.service.store.Export(ctx, s.id, w)
 }

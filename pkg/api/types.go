@@ -1,52 +1,57 @@
 package api
 
-import "context"
+import (
+	"context"
+	"io"
+	"time"
+)
 
 // LogEntry represents a single memory record appended by an agent.
 type LogEntry struct {
 	ID        int64
 	SessionID string
-	Role      string // e.g., "frontend-agent", "backend-agent"
+	Role      string
 	Content   string
 	Timestamp int64
+	Archived  bool
+}
+
+// SessionInfo summarizes a session for listing.
+type SessionInfo struct {
+	ID          string
+	EntryCount  int
+	ActiveCount int
+	UpdatedAt   int64
 }
 
 // Session represents an active connection to a specific memory context.
 type Session interface {
-	// Log appends a new entry to the session's memory.
 	Log(ctx context.Context, role, content string) error
-	
-	// Ask searches the session's memory using natural language.
 	Ask(ctx context.Context, query string) ([]LogEntry, error)
-	
-	// Lock attempts to acquire an advisory lock on a specific file path.
-	// It returns a function that must be called to release the lock.
-	Lock(ctx context.Context, path string) (func() error, error)
-	
-	// GetLockStatus checks if a file is currently locked.
-	GetLockStatus(ctx context.Context, path string) (bool, string, error) // Returns (isLocked, owner, error)
-	
-	// ID returns the underlying session identifier.
+	Lock(ctx context.Context, path string, owner string, ttl time.Duration) (func() error, error)
+	ReleaseLock(ctx context.Context, path string) error
+	GetLockStatus(ctx context.Context, path string) (bool, string, error)
+	Compact(ctx context.Context) (int64, error)
+	Export(ctx context.Context, w io.Writer) error
 	ID() string
 }
 
-// MemoryService is the "Deep Brain" of the broker, handling session lifecycle and storage.
+// MemoryService is the "Deep Brain" of the broker.
 type MemoryService interface {
-	// Connect initializes or retrieves a Session object for the given ID.
 	Connect(ctx context.Context, sessionID string) (Session, error)
-	
-	// Close shuts down the service, ensuring all background buffers are flushed.
 	Close() error
 }
 
-// Store defines the internal interface for persistence and searching.
+// Store defines the internal interface for persistence.
 type Store interface {
-	// Append writes a new log entry to the database and schedules it for Markdown syncing.
 	Append(ctx context.Context, entry LogEntry) error
-	
-	// Search performs a full-text search over the logs for a specific session.
 	Search(ctx context.Context, sessionID string, query string) ([]LogEntry, error)
-	
-	// Close flushes any pending writes and closes the underlying database.
+	Export(ctx context.Context, sessionID string, w io.Writer) error
+	ArchiveEntries(ctx context.Context, sessionID string) (int64, error)
+	ListSessions(ctx context.Context) ([]SessionInfo, error)
+	PruneEntries(ctx context.Context, olderThan time.Duration) (int64, error)
+	AcquireLock(ctx context.Context, sessionID, path, owner string, ttl time.Duration) error
+	ReleaseLock(ctx context.Context, sessionID, path string) error
+	GetLockStatus(ctx context.Context, path string) (bool, string, error)
 	Close() error
 }
