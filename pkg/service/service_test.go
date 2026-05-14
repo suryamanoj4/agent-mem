@@ -42,7 +42,7 @@ func TestMemoryService_EndToEnd(t *testing.T) {
 		t.Fatalf("failed to log entry: %v", err)
 	}
 
-	results, err := sess.Ask(ctx, "test")
+	results, err := sess.Ask(ctx, "test", 5)
 	if err != nil {
 		t.Fatalf("failed to search: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestCompact(t *testing.T) {
 	sess.Log(ctx, "agent-b", "Second decision about database")
 
 	// Both should be searchable
-	results, _ := sess.Ask(ctx, "decision")
+	results, _ := sess.Ask(ctx, "decision", 5)
 	if len(results) != 2 {
 		t.Errorf("expected 2 results before compact, got %d", len(results))
 	}
@@ -156,14 +156,14 @@ func TestCompact(t *testing.T) {
 	}
 
 	// Search should now return nothing (entries are archived)
-	results, _ = sess.Ask(ctx, "decision")
+	results, _ = sess.Ask(ctx, "decision", 5)
 	if len(results) != 0 {
 		t.Errorf("expected 0 results after compact, got %d", len(results))
 	}
 
 	// New entries should be searchable
 	sess.Log(ctx, "agent-c", "Third decision about caching")
-	results, _ = sess.Ask(ctx, "decision")
+	results, _ = sess.Ask(ctx, "decision", 5)
 	if len(results) != 1 {
 		t.Errorf("expected 1 result after new entry, got %d", len(results))
 	}
@@ -316,7 +316,7 @@ func TestPrivacyFilter(t *testing.T) {
 	}
 
 	// Verify only the clean entry was stored
-	results, _ := sess.Ask(ctx, "decision")
+	results, _ := sess.Ask(ctx, "decision", 5)
 	if len(results) != 1 {
 		t.Errorf("expected 1 searchable entry, got %d", len(results))
 	}

@@ -27,7 +27,7 @@ type SessionInfo struct {
 // Session represents an active connection to a specific memory context.
 type Session interface {
 	Log(ctx context.Context, role, content string) error
-	Ask(ctx context.Context, query string) ([]LogEntry, error)
+	Ask(ctx context.Context, query string, contextSize int) ([]LogEntry, error)
 	Lock(ctx context.Context, path string, owner string, ttl time.Duration) (func() error, error)
 	ReleaseLock(ctx context.Context, path string) error
 	GetLockStatus(ctx context.Context, path string) (bool, string, error)
@@ -45,7 +45,7 @@ type MemoryService interface {
 // Store defines the internal interface for persistence.
 type Store interface {
 	Append(ctx context.Context, entry LogEntry) error
-	Search(ctx context.Context, sessionID string, query string) ([]LogEntry, error)
+	Search(ctx context.Context, sessionID string, query string, contextSize int) ([]LogEntry, error)
 	Export(ctx context.Context, sessionID string, w io.Writer) error
 	ArchiveEntries(ctx context.Context, sessionID string) (int64, error)
 	ListSessions(ctx context.Context) ([]SessionInfo, error)

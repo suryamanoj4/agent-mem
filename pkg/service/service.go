@@ -78,8 +78,8 @@ func (s *session) Log(ctx context.Context, role, content string) error {
 	return s.service.store.Append(ctx, entry)
 }
 
-func (s *session) Ask(ctx context.Context, query string) ([]api.LogEntry, error) {
-	return s.service.store.Search(ctx, s.id, query)
+func (s *session) Ask(ctx context.Context, query string, contextSize int) ([]api.LogEntry, error) {
+	return s.service.store.Search(ctx, s.id, query, contextSize)
 }
 
 func (s *session) Lock(ctx context.Context, path string, owner string, ttl time.Duration) (func() error, error) {

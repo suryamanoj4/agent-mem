@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"agent-memory/pkg/api"
@@ -96,26 +97,121 @@ func (s *SQLStore) Append(ctx context.Context, entry api.LogEntry) error {
 	return nil
 }
 
-func (s *SQLStore) Search(ctx context.Context, sessionID string, query string) ([]api.LogEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.id, m.session_id, m.role, m.content, m.timestamp, m.archived
-		FROM memory_logs m
-		JOIN memory_logs_fts f ON m.id = f.rowid
-		WHERE m.session_id = ? AND m.archived = 0 AND memory_logs_fts MATCH ?
-		ORDER BY f.rank
-		LIMIT 10
-	`, sessionID, query)
+func (s *SQLStore) Search(ctx context.Context, sessionID string, query string, contextSize int) ([]api.LogEntry, error) {
+	// Step 1: Get matching entry positions via FTS5
+	if contextSize < 0 {
+		contextSize = 5
+	}
+
+	matchQuery := `
+	WITH ranked AS (
+		SELECT id, ROW_NUMBER() OVER (ORDER BY timestamp ASC, id ASC) as rn
+		FROM memory_logs
+		WHERE session_id = ? AND archived = 0
+	)
+	SELECT r.id, r.rn
+	FROM ranked r
+	JOIN memory_logs_fts f ON r.id = f.rowid
+	WHERE f.content MATCH ?
+	ORDER BY f.rank
+	LIMIT 10
+	`
+
+	rows, err := s.db.QueryContext(ctx, matchQuery, sessionID, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search: %w", err)
 	}
 	defer rows.Close()
 
-	var results []api.LogEntry
+	type match struct {
+		id int64
+		rn int64
+	}
+	var matches []match
 	for rows.Next() {
+		var m match
+		if err := rows.Scan(&m.id, &m.rn); err != nil {
+			return nil, fmt.Errorf("failed to scan match: %w", err)
+		}
+		matches = append(matches, m)
+	}
+	if len(matches) == 0 {
+		return nil, nil
+	}
+
+	if contextSize == 0 {
+		ids := make([]interface{}, len(matches))
+		for i, m := range matches {
+			ids[i] = m.id
+		}
+		placeholders := strings.Repeat(",?", len(matches))[1:]
+		q := fmt.Sprintf(
+			`SELECT id, session_id, role, content, timestamp, archived FROM memory_logs WHERE session_id = ? AND id IN (%s) ORDER BY timestamp ASC, id ASC`,
+			placeholders,
+		)
+		args := []interface{}{sessionID}
+		args = append(args, ids...)
+		rrows, err := s.db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch exact matches: %w", err)
+		}
+		defer rrows.Close()
+		var results []api.LogEntry
+		for rrows.Next() {
+			var e api.LogEntry
+			var archived int
+			if err := rrows.Scan(&e.ID, &e.SessionID, &e.Role, &e.Content, &e.Timestamp, &archived); err != nil {
+				return nil, fmt.Errorf("failed to scan result: %w", err)
+			}
+			e.Archived = archived == 1
+			results = append(results, e)
+		}
+		return results, nil
+	}
+
+	// Step 2: Compute global window across all matches
+	minRN := int64(1<<63 - 1)
+	maxRN := int64(0)
+	for _, m := range matches {
+		lo := m.rn - int64(contextSize)
+		if lo < 1 {
+			lo = 1
+		}
+		hi := m.rn + int64(contextSize)
+		if hi > maxRN {
+			maxRN = hi
+		}
+		if lo < minRN {
+			minRN = lo
+		}
+	}
+
+	// Step 3: Fetch all entries in the window
+	windowQuery := `
+	WITH ranked AS (
+		SELECT id, session_id, role, content, timestamp, archived,
+			   ROW_NUMBER() OVER (ORDER BY timestamp ASC, id ASC) as rn
+		FROM memory_logs
+		WHERE session_id = ? AND archived = 0
+	)
+	SELECT id, session_id, role, content, timestamp, archived
+	FROM ranked
+	WHERE rn BETWEEN ? AND ?
+	ORDER BY rn ASC
+	`
+
+	wrows, err := s.db.QueryContext(ctx, windowQuery, sessionID, minRN, maxRN)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch window: %w", err)
+	}
+	defer wrows.Close()
+
+	var results []api.LogEntry
+	for wrows.Next() {
 		var e api.LogEntry
 		var archived int
-		if err := rows.Scan(&e.ID, &e.SessionID, &e.Role, &e.Content, &e.Timestamp, &archived); err != nil {
-			return nil, fmt.Errorf("failed to scan search result: %w", err)
+		if err := wrows.Scan(&e.ID, &e.SessionID, &e.Role, &e.Content, &e.Timestamp, &archived); err != nil {
+			return nil, fmt.Errorf("failed to scan result: %w", err)
 		}
 		e.Archived = archived == 1
 		results = append(results, e)

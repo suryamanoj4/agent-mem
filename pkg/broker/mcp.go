@@ -35,6 +35,7 @@ func (b *MCPBroker) registerTools() {
 	searchTool := mcp.NewTool("search_memory",
 		mcp.WithDescription("Search the project's shared memory logs using natural language keywords."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("The natural language search query.")),
+		mcp.WithNumber("context", mcp.Description("Number of surrounding entries to include for context (default 5). Set to 0 to return only exact matches.")),
 	)
 
 	lockStatusTool := mcp.NewTool("get_lock_status",
@@ -78,7 +79,16 @@ func (b *MCPBroker) handleAppend(ctx context.Context, request mcp.CallToolReques
 func (b *MCPBroker) handleSearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	query, _ := request.RequireString("query")
 
-	entries, err := b.session.Ask(ctx, query)
+	contextSize := 5
+	if args := request.GetArguments(); args != nil {
+		if ctxVal, ok := args["context"]; ok {
+			if cf, ok := ctxVal.(float64); ok {
+				contextSize = int(cf)
+			}
+		}
+	}
+
+	entries, err := b.session.Ask(ctx, query, contextSize)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Search failed: %v", err)), nil
 	}

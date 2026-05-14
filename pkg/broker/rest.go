@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"agent-memory/pkg/api"
@@ -85,7 +86,15 @@ func (b *RESTBroker) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "query parameter is required")
 		return
 	}
-	entries, err := sess.Ask(r.Context(), query)
+
+	contextSize := 5
+	if cs := r.URL.Query().Get("context"); cs != "" {
+		if v, err := strconv.Atoi(cs); err == nil && v >= 0 {
+			contextSize = v
+		}
+	}
+
+	entries, err := sess.Ask(r.Context(), query, contextSize)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
