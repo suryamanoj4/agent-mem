@@ -91,7 +91,8 @@ agent-mem export --session feature-auth > feature-auth.md
 
 ## Docs
 - [PRD.md](./PRD.md): Product Requirements Document.
-- [plans/agent-memory.md](./plans/agent-memory.md): Implementation Roadmap.
+- [docs/agent-memory.md](./docs/agent-memory.md): Implementation Roadmap.
+- [docs/decision-store-ports-adapters.md](./docs/decision-store-ports-adapters.md): Decision Store Refactor Plan.
 
 ## License
 MIT
