@@ -3,6 +3,7 @@ package decision
 import (
 	"context"
 	"io"
+	"time"
 )
 
 type SearchRequest struct {
