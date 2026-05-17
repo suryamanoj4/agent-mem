@@ -1,56 +1,59 @@
 # agent-memory
 
-**agent-memory** is a persistent context broker for multi-agent coding workflows. It provides a shared blackboard where agents write decisions and read what other agents in the same session have decided — surviving beyond individual agent sessions.
+**agent-memory** is a shared decision store for multi-agent coding workflows. Agents store structured decisions (architecture, code changes, plans, preferences) and retrieve what other agents decided — surviving beyond individual agent sessions.
 
 Built in Go, it exposes tools via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) for agent integration and a REST API for custom scripts.
 
 ## Problem
 
-In a multi-agent workflow, agents suffer from "context fragmentation" — the frontend agent doesn't know what the backend agent decided, leading to conflicting approaches. Each agent's context window resets between sessions, losing critical architectural decisions.
+In a multi-agent workflow, agents suffer from "context fragmentation" — the frontend agent doesn't know what the backend agent decided, leading to conflicting approaches. Developers end up copy-pasting messages between agent sessions.
 
 ## Solution
 
-`agent-memory` is a persistent shared blackboard. Agents append decisions to a named session, and other agents in the same session search those decisions via natural language keywords. The blackboard survives agent restarts — the context that normally gets lost persists in SQLite.
+`agent-memory` is a persistent decision store. Agents store structured decisions with agent attribution, decision types, and optional diffs. Other agents retrieve cross-agent context — seeing what other agents decided plus user preferences — without needing to wade through raw conversation history.
 
 ## Architecture
 
-- **Core Engine (MemoryService)**: Session factory and business logic layer.
-- **Storage**: SQLite in WAL mode with FTS5 for keyword search.
-- **Advisory Locking**: SQLite-backed locks with TTL, visible across multiple agent processes.
-- **Compaction**: Agents can archive old entries to keep search results focused on recent decisions. Archived entries remain visible in export with `[archived]` tags.
-- **Privacy**: `.mcpignore` file patterns block sensitive content from being stored.
-- **Export**: On-demand Markdown generation from SQLite — no background syncing.
+- **Decision Store**: SQLite in WAL mode with FTS5 for full-text search.
+- **Attribution**: Every decision has agent_id + author_type (agent/user) + decision_type (architecture, code_change, plan, preference, note).
+- **Cross-Agent Context**: `get_context` excludes the caller's own decisions, returns decisions from other agents + user preferences.
+- **Locking**: SQLite-backed locks with TTL, visible across processes.
+- **Export**: On-demand Markdown from SQLite — no background syncing.
 - **Interfaces**:
-  - **MCP**: Native integration for coding agents (6 tools).
-  - **REST**: HTTP API for custom scripts on localhost.
+  - **MCP**: 8 tools for agent integration.
+  - **REST**: HTTP API for custom scripts.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `agent-mem start --session <id> [--mcpignore .mcpignore]` | Start MCP broker for a session |
+| `agent-mem start --session <id>` | Start MCP broker for a session |
 | `agent-mem serve --port 4096` | Start REST API server for all sessions |
-| `agent-mem export --session <id>` | Export session memory as Markdown to stdout |
-| `agent-mem list` | List all sessions with entry counts |
-| `agent-mem prune --days 30` | Delete archived entries older than N days |
+| `agent-mem export --session <id>` | Export session decisions as Markdown |
+| `agent-mem list` | List all sessions with decision counts |
+| `agent-mem prune --days 30` | Delete archived decisions older than N days |
 | `agent-mem stop` | Stop the running REST server |
 
 ## MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `append_log` | Append a decision to session memory |
-| `search_memory` | Search session memory via FTS5 keyword search |
-| `acquire_lock` | Lock a file path (with 1-hour TTL) |
+| `decide` | Store a decision (architecture, code_change, plan, note) |
+| `get_context` | Get decisions from other agents + user preferences |
+| `prefer` | Store a user preference or instruction |
+| `search_decisions` | Search decisions by keyword, filter by type |
+| `acquire_lock` | Lock a file path (1-hour TTL) |
 | `release_lock` | Release a lock on a file path |
 | `get_lock_status` | Check if a file path is locked |
-| `compact_session` | Archive all non-archived entries |
+| `compact_session` | Archive all non-archived decisions |
 
 ## REST Endpoints
 
 ```
-POST   /api/sessions/{id}/log
-GET    /api/sessions/{id}/search?query=...
+POST   /api/sessions/{id}/decide
+GET    /api/sessions/{id}/context?agent_id=...
+POST   /api/sessions/{id}/prefer
+GET    /api/sessions/{id}/search?query=...&type=...
 POST   /api/sessions/{id}/lock
 DELETE /api/sessions/{id}/lock?path=...
 GET    /api/sessions/{id}/lock/status?path=...
@@ -62,11 +65,9 @@ GET    /api/sessions/{id}/export
 
 ```
 cmd/agent-mem/       CLI entrypoint (start, serve, export, list, prune, stop)
-pkg/service/         Session factory, privacy filter, lock delegation
+pkg/decision/        Domain types, ports, SQLite adapter, in-memory test adapter
 pkg/broker/          MCP transport + REST transport
-pkg/store/           SQLite persistence (WAL + FTS5 + locks)
 pkg/privacy/         .mcpignore content filtering
-pkg/api/             Shared interfaces and types
 ```
 
 ## Quick Start
