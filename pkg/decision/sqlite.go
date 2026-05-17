@@ -102,16 +102,25 @@ func (s *SQLiteDecisionStore) Search(ctx context.Context, req SearchRequest) ([]
 		limit = 10
 	}
 
-	query := `
-	SELECT d.id, d.session_id, d.agent_id, d.author_type, d.content, d.decision_type, d.timestamp, d.archived
-	FROM decisions d
-	JOIN decisions_fts f ON d.id = f.rowid
-	WHERE d.session_id = ? AND d.archived = 0 AND f.content MATCH ?
-	ORDER BY d.timestamp DESC
-	LIMIT ?
-	`
+	var rows *sql.Rows
+	var err error
 
-	rows, err := s.db.QueryContext(ctx, query, req.SessionID, req.Query, limit)
+	if req.Query == "" {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT id, session_id, agent_id, author_type, content, decision_type, timestamp, archived
+			 FROM decisions WHERE session_id = ? AND archived = 0 ORDER BY timestamp DESC LIMIT ?`,
+			req.SessionID, limit,
+		)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT d.id, d.session_id, d.agent_id, d.author_type, d.content, d.decision_type, d.timestamp, d.archived
+			FROM decisions d
+			JOIN decisions_fts f ON d.id = f.rowid
+			WHERE d.session_id = ? AND d.archived = 0 AND f.content MATCH ?
+			ORDER BY d.timestamp DESC
+			LIMIT ?
+		`, req.SessionID, req.Query, limit)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to search decisions: %w", err)
 	}

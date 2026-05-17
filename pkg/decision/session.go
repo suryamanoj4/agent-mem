@@ -129,6 +129,10 @@ func (s *DecisionSession) GetLockStatus(ctx context.Context, path string) (bool,
 	return s.lockMgr.Status(ctx, path)
 }
 
+func (s *DecisionSession) ReleaseLock(ctx context.Context, path string) error {
+	return s.lockMgr.Release(ctx, s.id, path)
+}
+
 func (s *DecisionSession) Export(ctx context.Context, w io.Writer) error {
 	return s.store.Export(ctx, s.id, w)
 }

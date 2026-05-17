@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
@@ -12,20 +13,18 @@ import (
 	"syscall"
 	"time"
 
-	"agent-memory/pkg/api"
 	"agent-memory/pkg/broker"
-	"agent-memory/pkg/privacy"
-	"agent-memory/pkg/service"
-	"agent-memory/pkg/store"
+	"agent-memory/pkg/decision"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
 )
 
 var (
-	sessionID  string
-	baseDir    string
-	port       int
-	mcpIgnore  string
-	olderThan  int
+	sessionID string
+	baseDir   string
+	port      int
+	mcpIgnore string
+	olderThan int
 )
 
 func main() {
@@ -34,7 +33,7 @@ func main() {
 
 	var rootCmd = &cobra.Command{
 		Use:   "agent-mem",
-		Short: "agent-memory is a unified context broker for coding agents.",
+		Short: "agent-memory is a shared decision store for coding agents.",
 	}
 
 	rootCmd.PersistentFlags().StringVar(&baseDir, "dir", defaultDir, "base directory for storage")
@@ -47,26 +46,21 @@ func main() {
 				log.Fatal("Error: --session ID is required")
 			}
 
-			s, err := store.NewStore(baseDir)
+			store, err := decision.NewSQLiteDecisionStore(baseDir)
 			if err != nil {
 				log.Fatalf("Failed to initialize store: %v", err)
 			}
-			defer s.Close()
+			defer store.Close()
 
-			var svc api.MemoryService
-			filter, fErr := privacy.NewFilterFromFile(mcpIgnore)
-			if fErr == nil {
-				svc = service.NewMemoryServiceWithFilter(s, filter)
-			} else {
-				svc = service.NewMemoryService(s)
-			}
-			defer svc.Close()
-
-			ctx := context.Background()
-			sess, err := svc.Connect(ctx, sessionID)
+			dbPath := filepath.Join(baseDir, "decisions.db")
+			sqlDB, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
 			if err != nil {
-				log.Fatalf("Failed to connect to session: %v", err)
+				log.Fatalf("Failed to open db for lock manager: %v", err)
 			}
+			defer sqlDB.Close()
+
+			lockMgr := decision.NewSQLiteLockManager(sqlDB)
+			sess := decision.NewDecisionSession(sessionID, store, lockMgr)
 
 			fmt.Fprintf(os.Stderr, "Starting agent-memory MCP server for session: %s\n", sessionID)
 			b := broker.NewMCPBroker("agent-memory", "0.1.0", sess)
@@ -82,22 +76,27 @@ func main() {
 		Use:   "serve",
 		Short: "Start the REST API server for all sessions",
 		Run: func(cmd *cobra.Command, args []string) {
-			s, err := store.NewStore(baseDir)
+			store, err := decision.NewSQLiteDecisionStore(baseDir)
 			if err != nil {
 				log.Fatalf("Failed to initialize store: %v", err)
 			}
-			defer s.Close()
+			defer store.Close()
 
-			svc := service.NewMemoryService(s)
-			defer svc.Close()
+			dbPath := filepath.Join(baseDir, "decisions.db")
+			sqlDB, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL")
+			if err != nil {
+				log.Fatalf("Failed to open db for lock manager: %v", err)
+			}
+			defer sqlDB.Close()
 
-			// Write PID file
+			lockMgr := decision.NewSQLiteLockManager(sqlDB)
+
 			pidFile := filepath.Join(baseDir, "server.pid")
 			os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0644)
 			defer os.Remove(pidFile)
 
 			addr := fmt.Sprintf("localhost:%d", port)
-			b := broker.NewRESTBroker(svc)
+			b := broker.NewRESTBroker(store, lockMgr)
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
@@ -117,18 +116,18 @@ func main() {
 
 	var exportCmd = &cobra.Command{
 		Use:   "export",
-		Short: "Export a session's memory as Markdown",
+		Short: "Export a session's decisions as Markdown",
 		Run: func(cmd *cobra.Command, args []string) {
 			if sessionID == "" {
 				log.Fatal("Error: --session ID is required")
 			}
-			s, err := store.NewStore(baseDir)
+			store, err := decision.NewSQLiteDecisionStore(baseDir)
 			if err != nil {
 				log.Fatalf("Failed to initialize store: %v", err)
 			}
-			defer s.Close()
+			defer store.Close()
 			ctx := context.Background()
-			if err := s.Export(ctx, sessionID, os.Stdout); err != nil {
+			if err := store.Export(ctx, sessionID, os.Stdout); err != nil {
 				log.Fatalf("Export failed: %v", err)
 			}
 		},
@@ -139,13 +138,13 @@ func main() {
 		Use:   "list",
 		Short: "List all sessions in the store",
 		Run: func(cmd *cobra.Command, args []string) {
-			s, err := store.NewStore(baseDir)
+			store, err := decision.NewSQLiteDecisionStore(baseDir)
 			if err != nil {
 				log.Fatalf("Failed to initialize store: %v", err)
 			}
-			defer s.Close()
+			defer store.Close()
 
-			sessions, err := s.ListSessions(context.Background())
+			sessions, err := store.ListSessions(context.Background())
 			if err != nil {
 				log.Fatalf("Failed to list sessions: %v", err)
 			}
@@ -155,30 +154,30 @@ func main() {
 				return
 			}
 
-			fmt.Printf("%-30s %10s %10s %s\n", "SESSION ID", "ENTRIES", "ACTIVE", "LAST UPDATED")
-			for _, info := range sessions {
-				t := time.Unix(info.UpdatedAt, 0).Format("2006-01-02 15:04")
-				fmt.Printf("%-30s %10d %10d %s\n", info.ID, info.EntryCount, info.ActiveCount, t)
+			fmt.Printf("%-30s %10s %s\n", "SESSION ID", "ACTIVE", "LAST UPDATED")
+			for _, s := range sessions {
+				t := s.UpdatedAt.Format("2006-01-02 15:04")
+				fmt.Printf("%-30s %10d %s\n", s.SessionID, s.TotalDecisions, t)
 			}
 		},
 	}
 
 	var pruneCmd = &cobra.Command{
 		Use:   "prune",
-		Short: "Delete archived entries older than N days",
+		Short: "Delete archived decisions older than N days",
 		Run: func(cmd *cobra.Command, args []string) {
-			s, err := store.NewStore(baseDir)
+			store, err := decision.NewSQLiteDecisionStore(baseDir)
 			if err != nil {
 				log.Fatalf("Failed to initialize store: %v", err)
 			}
-			defer s.Close()
+			defer store.Close()
 
 			cutoff := time.Duration(olderThan) * 24 * time.Hour
-			count, err := s.PruneEntries(context.Background(), cutoff)
+			count, err := store.PruneEntries(context.Background(), cutoff)
 			if err != nil {
-				log.Fatalf("Failed to prune entries: %v", err)
+				log.Fatalf("Failed to prune decisions: %v", err)
 			}
-			fmt.Printf("Pruned %d archived entries older than %d days.\n", count, olderThan)
+			fmt.Printf("Pruned %d archived decisions older than %d days.\n", count, olderThan)
 		},
 	}
 	pruneCmd.Flags().IntVarP(&olderThan, "days", "d", 30, "Delete entries older than N days")

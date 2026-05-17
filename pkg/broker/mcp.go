@@ -5,17 +5,17 @@ import (
 	"fmt"
 	"time"
 
-	"agent-memory/pkg/api"
+	"agent-memory/pkg/decision"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
 type MCPBroker struct {
 	srv     *server.MCPServer
-	session api.Session
+	session *decision.DecisionSession
 }
 
-func NewMCPBroker(name, version string, session api.Session) *MCPBroker {
+func NewMCPBroker(name, version string, session *decision.DecisionSession) *MCPBroker {
 	s := server.NewMCPServer(name, version)
 	b := &MCPBroker{
 		srv:     s,
@@ -26,120 +26,156 @@ func NewMCPBroker(name, version string, session api.Session) *MCPBroker {
 }
 
 func (b *MCPBroker) registerTools() {
-	appendTool := mcp.NewTool("append_log",
-		mcp.WithDescription("Append a new decision, architectural note, or project state update to the shared memory."),
-		mcp.WithString("role", mcp.Required(), mcp.Description("The role of the agent making the update (e.g., 'frontend-expert').")),
-		mcp.WithString("content", mcp.Required(), mcp.Description("The actual content/decision to store.")),
-	)
+	b.srv.AddTool(mcp.NewTool("decide",
+		mcp.WithDescription("Store a decision by an agent (architecture, code change, plan, note)."),
+		mcp.WithString("agent_id", mcp.Required(), mcp.Description("The agent making this decision.")),
+		mcp.WithString("type", mcp.Required(), mcp.Description("Decision type: architecture, code_change, plan, preference, note.")),
+		mcp.WithString("summary", mcp.Required(), mcp.Description("Brief summary of the decision.")),
+		mcp.WithString("diff", mcp.Description("Optional diff for code changes.")),
+	), b.handleDecide)
 
-	searchTool := mcp.NewTool("search_memory",
-		mcp.WithDescription("Search the project's shared memory logs using natural language keywords."),
-		mcp.WithString("query", mcp.Required(), mcp.Description("The natural language search query.")),
-		mcp.WithNumber("context", mcp.Description("Number of surrounding entries to include for context (default 5). Set to 0 to return only exact matches.")),
-	)
+	b.srv.AddTool(mcp.NewTool("get_context",
+		mcp.WithDescription("Retrieve decisions from other agents for cross-agent awareness."),
+		mcp.WithString("agent_id", mcp.Required(), mcp.Description("Your agent ID. Your own decisions are excluded.")),
+	), b.handleGetContext)
 
-	lockStatusTool := mcp.NewTool("get_lock_status",
-		mcp.WithDescription("Check if a specific file path is currently locked by another agent."),
+	b.srv.AddTool(mcp.NewTool("prefer",
+		mcp.WithDescription("Store a user preference or instruction."),
+		mcp.WithString("summary", mcp.Required(), mcp.Description("The user preference or instruction.")),
+	), b.handlePrefer)
+
+	b.srv.AddTool(mcp.NewTool("search_decisions",
+		mcp.WithDescription("Search decisions using natural language keywords."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("The search query.")),
+		mcp.WithString("type", mcp.Description("Filter by decision type.")),
+	), b.handleSearch)
+
+	b.srv.AddTool(mcp.NewTool("get_lock_status",
+		mcp.WithDescription("Check if a file path is currently locked."),
 		mcp.WithString("path", mcp.Required(), mcp.Description("The relative path to the file.")),
-	)
+	), b.handleLockStatus)
 
-	acquireLockTool := mcp.NewTool("acquire_lock",
-		mcp.WithDescription("Claim an advisory lock on a file path to signal to other agents that you are working on it."),
+	b.srv.AddTool(mcp.NewTool("acquire_lock",
+		mcp.WithDescription("Claim an advisory lock on a file path."),
 		mcp.WithString("path", mcp.Required(), mcp.Description("The relative path to the file.")),
-	)
+	), b.handleAcquireLock)
 
-	releaseLockTool := mcp.NewTool("release_lock",
-		mcp.WithDescription("Release a previously acquired lock on a file path."),
+	b.srv.AddTool(mcp.NewTool("release_lock",
+		mcp.WithDescription("Release a previously acquired lock."),
 		mcp.WithString("path", mcp.Required(), mcp.Description("The relative path to the file.")),
-	)
+	), b.handleReleaseLock)
 
-	compactTool := mcp.NewTool("compact_session",
-		mcp.WithDescription("Archive all non-archived entries in the session to keep search results focused on recent decisions."),
-	)
-
-	b.srv.AddTool(appendTool, b.handleAppend)
-	b.srv.AddTool(searchTool, b.handleSearch)
-	b.srv.AddTool(lockStatusTool, b.handleLockStatus)
-	b.srv.AddTool(acquireLockTool, b.handleAcquireLock)
-	b.srv.AddTool(releaseLockTool, b.handleReleaseLock)
-	b.srv.AddTool(compactTool, b.handleCompact)
+	b.srv.AddTool(mcp.NewTool("compact_session",
+		mcp.WithDescription("Archive all decisions to keep search results focused on recent entries."),
+	), b.handleCompact)
 }
 
-func (b *MCPBroker) handleAppend(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	role, _ := request.RequireString("role")
-	content, _ := request.RequireString("content")
+func (b *MCPBroker) handleDecide(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	agentID, _ := request.RequireString("agent_id")
+	decisionType, _ := request.RequireString("type")
+	summary, _ := request.RequireString("summary")
 
-	if err := b.session.Log(ctx, role, content); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to append log: %v", err)), nil
+	ctx = decision.WithCaller(ctx, agentID)
+
+	opts := []decision.DecideOption{}
+	if diff, _ := request.RequireString("diff"); diff != "" {
+		opts = append(opts, decision.WithDiff(diff))
 	}
 
-	return mcp.NewToolResultText(fmt.Sprintf("Successfully appended log for role: %s", role)), nil
+	if err := b.session.Decide(ctx, decision.DecisionType(decisionType), summary, opts...); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to store decision: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText("Decision stored successfully."), nil
+}
+
+func (b *MCPBroker) handleGetContext(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	agentID, _ := request.RequireString("agent_id")
+	ctx = decision.WithCaller(ctx, agentID)
+
+	decisions, err := b.session.GetContext(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get context: %v", err)), nil
+	}
+
+	if len(decisions) == 0 {
+		return mcp.NewToolResultText("No decisions from other agents found."), nil
+	}
+
+	responseText := "Decisions from other agents and user:\n"
+	for _, d := range decisions {
+		tag := ""
+		if d.Archived {
+			tag = " [archived]"
+		}
+		responseText += fmt.Sprintf("- [%s][%s]%s: %s\n", d.AgentID, d.DecisionType, tag, d.Content.Summary)
+	}
+	return mcp.NewToolResultText(responseText), nil
+}
+
+func (b *MCPBroker) handlePrefer(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	summary, _ := request.RequireString("summary")
+	ctx = decision.WithUser(ctx)
+
+	if err := b.session.Prefer(ctx, summary); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to store preference: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText("Preference stored successfully."), nil
 }
 
 func (b *MCPBroker) handleSearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	query, _ := request.RequireString("query")
 
-	contextSize := 5
-	if args := request.GetArguments(); args != nil {
-		if ctxVal, ok := args["context"]; ok {
-			if cf, ok := ctxVal.(float64); ok {
-				contextSize = int(cf)
-			}
-		}
+	filters := decision.SearchFilters{Limit: 20}
+	if dt, _ := request.RequireString("type"); dt != "" {
+		filters = filters.WithTypes(decision.DecisionType(dt))
 	}
 
-	entries, err := b.session.Ask(ctx, query, contextSize)
+	decisions, err := b.session.Search(ctx, query, filters)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Search failed: %v", err)), nil
 	}
 
-	if len(entries) == 0 {
-		return mcp.NewToolResultText("No matching memory entries found."), nil
+	if len(decisions) == 0 {
+		return mcp.NewToolResultText("No matching decisions found."), nil
 	}
 
-	responseText := "Relevant Memory Entries:\n"
-	for _, e := range entries {
-		responseText += fmt.Sprintf("- [%s]: %s\n", e.Role, e.Content)
+	responseText := "Matching Decisions:\n"
+	for _, d := range decisions {
+		responseText += fmt.Sprintf("- [%s][%s]: %s\n", d.AgentID, d.DecisionType, d.Content.Summary)
 	}
-
 	return mcp.NewToolResultText(responseText), nil
 }
 
 func (b *MCPBroker) handleLockStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	path, _ := request.RequireString("path")
-
 	locked, owner, err := b.session.GetLockStatus(ctx, path)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get lock status: %v", err)), nil
 	}
-
 	if locked {
 		return mcp.NewToolResultText(fmt.Sprintf("File '%s' is LOCKED by %s", path, owner)), nil
 	}
-	return mcp.NewToolResultText(fmt.Sprintf("File '%s' is currently UNLOCKED", path)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("File '%s' is UNLOCKED", path)), nil
 }
 
 func (b *MCPBroker) handleAcquireLock(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	path, _ := request.RequireString("path")
-
-	// Use a 1-hour TTL. Locks auto-release if the agent crashes.
 	owner := "mcp-agent"
 	_, err := b.session.Lock(ctx, path, owner, 1*time.Hour)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Lock acquisition failed: %v", err)), nil
 	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Successfully acquired lock for: %s (expires in 1 hour)", path)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Lock acquired for: %s (expires in 1 hour)", path)), nil
 }
 
 func (b *MCPBroker) handleReleaseLock(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	path, _ := request.RequireString("path")
-
 	if err := b.session.ReleaseLock(ctx, path); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to release lock: %v", err)), nil
 	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Successfully released lock for: %s", path)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Lock released for: %s", path)), nil
 }
 
 func (b *MCPBroker) handleCompact(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -147,8 +183,7 @@ func (b *MCPBroker) handleCompact(ctx context.Context, request mcp.CallToolReque
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Compaction failed: %v", err)), nil
 	}
-
-	return mcp.NewToolResultText(fmt.Sprintf("Archived %d entries. Search results will now focus on recent entries.", count)), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Archived %d decisions.", count)), nil
 }
 
 func (b *MCPBroker) Serve() error {

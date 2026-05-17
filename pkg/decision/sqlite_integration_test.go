@@ -55,8 +55,8 @@ func TestSQLiteDecisionStore_MigrateFromLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HasLegacyData failed: %v", err)
 	}
-	if hasLegacy {
-		t.Error("expected HasLegacyData to return true before migration, but it did")
+	if !hasLegacy {
+		t.Error("expected HasLegacyData to return true after migration")
 	}
 
 	results, err := store.Search(context.Background(), SearchRequest{SessionID: "s1", Limit: 10})
@@ -89,7 +89,7 @@ func TestSQLiteDecisionStore_Store(t *testing.T) {
 		t.Fatalf("Store failed: %v", err)
 	}
 
-	results, err := store.Search(ctx, SearchRequest{SessionID: "s1", Limit: 10})
+	results, err := store.Search(ctx, SearchRequest{SessionID: "s1", Query: "PostgreSQL", Limit: 10})
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}

@@ -3,35 +3,44 @@ package broker
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
-	"agent-memory/pkg/api"
+	"agent-memory/pkg/decision"
 )
 
 type RESTBroker struct {
-	svc api.MemoryService
-	mux *http.ServeMux
-	srv *http.Server
+	store   decision.DecisionStore
+	lockMgr decision.LockManager
+	mux     *http.ServeMux
+	srv     *http.Server
 }
 
-func NewRESTBroker(svc api.MemoryService) *RESTBroker {
-	b := &RESTBroker{svc: svc, mux: http.NewServeMux()}
+func NewRESTBroker(store decision.DecisionStore, lockMgr decision.LockManager) *RESTBroker {
+	b := &RESTBroker{store: store, lockMgr: lockMgr, mux: http.NewServeMux()}
 	b.registerRoutes()
 	return b
 }
 
 func (b *RESTBroker) registerRoutes() {
-	b.mux.HandleFunc("POST /api/sessions/{sessionID}/log", b.handleLog)
+	b.mux.HandleFunc("POST /api/sessions/{sessionID}/decide", b.handleDecide)
+	b.mux.HandleFunc("GET /api/sessions/{sessionID}/context", b.handleGetContext)
+	b.mux.HandleFunc("POST /api/sessions/{sessionID}/prefer", b.handlePrefer)
 	b.mux.HandleFunc("GET /api/sessions/{sessionID}/search", b.handleSearch)
 	b.mux.HandleFunc("POST /api/sessions/{sessionID}/lock", b.handleAcquireLock)
 	b.mux.HandleFunc("DELETE /api/sessions/{sessionID}/lock", b.handleReleaseLock)
 	b.mux.HandleFunc("GET /api/sessions/{sessionID}/lock/status", b.handleLockStatus)
 	b.mux.HandleFunc("POST /api/sessions/{sessionID}/compact", b.handleCompact)
 	b.mux.HandleFunc("GET /api/sessions/{sessionID}/export", b.handleExport)
+}
+
+func (b *RESTBroker) session(r *http.Request) *decision.DecisionSession {
+	sessionID := r.PathValue("sessionID")
+	if sessionID == "" {
+		return nil
+	}
+	return decision.NewDecisionSession(sessionID, b.store, b.lockMgr)
 }
 
 func (b *RESTBroker) Serve(addr string) error {
@@ -44,31 +53,73 @@ func (b *RESTBroker) Shutdown(ctx context.Context) error {
 	return b.srv.Shutdown(ctx)
 }
 
-func (b *RESTBroker) session(r *http.Request) (api.Session, error) {
-	sessionID := r.PathValue("sessionID")
-	if sessionID == "" {
-		return nil, fmt.Errorf("sessionID is required")
-	}
-	return b.svc.Connect(r.Context(), sessionID)
+type decideRequest struct {
+	AgentID string `json:"agent_id"`
+	Type    string `json:"type"`
+	Summary string `json:"summary"`
+	Diff    string `json:"diff,omitempty"`
 }
 
-type logRequest struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-func (b *RESTBroker) handleLog(w http.ResponseWriter, r *http.Request) {
-	sess, err := b.session(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+func (b *RESTBroker) handleDecide(w http.ResponseWriter, r *http.Request) {
+	sess := b.session(r)
+	if sess == nil {
+		writeError(w, http.StatusBadRequest, "sessionID is required")
 		return
 	}
-	var req logRequest
+	var req decideRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if err := sess.Log(r.Context(), req.Role, req.Content); err != nil {
+	ctx := decision.WithCaller(r.Context(), req.AgentID)
+	var opts []decision.DecideOption
+	if req.Diff != "" {
+		opts = append(opts, decision.WithDiff(req.Diff))
+	}
+	if err := sess.Decide(ctx, decision.DecisionType(req.Type), req.Summary, opts...); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (b *RESTBroker) handleGetContext(w http.ResponseWriter, r *http.Request) {
+	sess := b.session(r)
+	if sess == nil {
+		writeError(w, http.StatusBadRequest, "sessionID is required")
+		return
+	}
+	agentID := r.URL.Query().Get("agent_id")
+	ctx := decision.WithCaller(r.Context(), agentID)
+
+	decisions, err := sess.GetContext(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if decisions == nil {
+		decisions = []decision.Decision{}
+	}
+	writeJSON(w, http.StatusOK, decisions)
+}
+
+type preferRequest struct {
+	Summary string `json:"summary"`
+}
+
+func (b *RESTBroker) handlePrefer(w http.ResponseWriter, r *http.Request) {
+	sess := b.session(r)
+	if sess == nil {
+		writeError(w, http.StatusBadRequest, "sessionID is required")
+		return
+	}
+	var req preferRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	ctx := decision.WithUser(r.Context())
+	if err := sess.Prefer(ctx, req.Summary); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -76,9 +127,9 @@ func (b *RESTBroker) handleLog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *RESTBroker) handleSearch(w http.ResponseWriter, r *http.Request) {
-	sess, err := b.session(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	sess := b.session(r)
+	if sess == nil {
+		writeError(w, http.StatusBadRequest, "sessionID is required")
 		return
 	}
 	query := r.URL.Query().Get("query")
@@ -87,22 +138,20 @@ func (b *RESTBroker) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	contextSize := 5
-	if cs := r.URL.Query().Get("context"); cs != "" {
-		if v, err := strconv.Atoi(cs); err == nil && v >= 0 {
-			contextSize = v
-		}
+	filters := decision.SearchFilters{Limit: 20}
+	if dt := r.URL.Query().Get("type"); dt != "" {
+		filters = filters.WithTypes(decision.DecisionType(dt))
 	}
 
-	entries, err := sess.Ask(r.Context(), query, contextSize)
+	decisions, err := sess.Search(r.Context(), query, filters)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if entries == nil {
-		entries = []api.LogEntry{}
+	if decisions == nil {
+		decisions = []decision.Decision{}
 	}
-	writeJSON(w, http.StatusOK, entries)
+	writeJSON(w, http.StatusOK, decisions)
 }
 
 type lockRequest struct {
@@ -112,9 +161,9 @@ type lockRequest struct {
 }
 
 func (b *RESTBroker) handleAcquireLock(w http.ResponseWriter, r *http.Request) {
-	sess, err := b.session(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	sess := b.session(r)
+	if sess == nil {
+		writeError(w, http.StatusBadRequest, "sessionID is required")
 		return
 	}
 	var req lockRequest
@@ -126,7 +175,7 @@ func (b *RESTBroker) handleAcquireLock(w http.ResponseWriter, r *http.Request) {
 	if ttl <= 0 {
 		ttl = 1 * time.Hour
 	}
-	_, err = sess.Lock(r.Context(), req.Path, req.Owner, ttl)
+	_, err := sess.Lock(r.Context(), req.Path, req.Owner, ttl)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -135,9 +184,9 @@ func (b *RESTBroker) handleAcquireLock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *RESTBroker) handleReleaseLock(w http.ResponseWriter, r *http.Request) {
-	sess, err := b.session(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	sess := b.session(r)
+	if sess == nil {
+		writeError(w, http.StatusBadRequest, "sessionID is required")
 		return
 	}
 	path := r.URL.Query().Get("path")
@@ -153,9 +202,9 @@ func (b *RESTBroker) handleReleaseLock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *RESTBroker) handleLockStatus(w http.ResponseWriter, r *http.Request) {
-	sess, err := b.session(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	sess := b.session(r)
+	if sess == nil {
+		writeError(w, http.StatusBadRequest, "sessionID is required")
 		return
 	}
 	path := r.URL.Query().Get("path")
@@ -176,9 +225,9 @@ func (b *RESTBroker) handleLockStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *RESTBroker) handleCompact(w http.ResponseWriter, r *http.Request) {
-	sess, err := b.session(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	sess := b.session(r)
+	if sess == nil {
+		writeError(w, http.StatusBadRequest, "sessionID is required")
 		return
 	}
 	count, err := sess.Compact(r.Context())
@@ -190,9 +239,9 @@ func (b *RESTBroker) handleCompact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (b *RESTBroker) handleExport(w http.ResponseWriter, r *http.Request) {
-	sess, err := b.session(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	sess := b.session(r)
+	if sess == nil {
+		writeError(w, http.StatusBadRequest, "sessionID is required")
 		return
 	}
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
