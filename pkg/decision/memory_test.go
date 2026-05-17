@@ -135,3 +135,31 @@ func TestMemoryDecisionStore_Export(t *testing.T) {
 		t.Errorf("export missing summary: %s", output)
 	}
 }
+
+func TestMemoryDecisionStore_PruneEntries(t *testing.T) {
+	store := NewMemoryDecisionStore()
+	ctx := context.Background()
+
+	old := time.Now().Add(-48 * time.Hour)
+	recent := time.Now()
+
+	store.Store(ctx, Decision{SessionID: "s1", DecisionType: DecisionTypeNote, Content: DecisionContent{Summary: "old archived"}, Timestamp: old, Archived: true})
+	store.Store(ctx, Decision{SessionID: "s1", DecisionType: DecisionTypeNote, Content: DecisionContent{Summary: "recent archived"}, Timestamp: recent, Archived: true})
+	store.Store(ctx, Decision{SessionID: "s1", DecisionType: DecisionTypeNote, Content: DecisionContent{Summary: "active entry"}, Timestamp: recent})
+
+	count, err := store.PruneEntries(ctx, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("PruneEntries failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 pruned, got %d", count)
+	}
+
+	results, _ := store.ListSessions(ctx)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 session after prune, got %d", len(results))
+	}
+	if results[0].TotalDecisions != 1 {
+		t.Errorf("expected 1 remaining active decision, got %d", results[0].TotalDecisions)
+	}
+}

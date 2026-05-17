@@ -167,6 +167,18 @@ func (s *SQLiteDecisionStore) Archive(ctx context.Context, sessionID string) (in
 	return res.RowsAffected()
 }
 
+func (s *SQLiteDecisionStore) PruneEntries(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan).Unix()
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM decisions WHERE archived = 1 AND timestamp < ?`,
+		cutoff,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (s *SQLiteDecisionStore) Export(ctx context.Context, sessionID string, w io.Writer) error {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT agent_id, author_type, content, decision_type, timestamp FROM decisions WHERE session_id = ? ORDER BY timestamp ASC`,

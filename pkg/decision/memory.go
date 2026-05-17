@@ -131,6 +131,24 @@ func (s *MemoryDecisionStore) Archive(ctx context.Context, sessionID string) (in
 	return count, nil
 }
 
+func (s *MemoryDecisionStore) PruneEntries(ctx context.Context, olderThan time.Duration) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cutoff := time.Now().Add(-olderThan)
+	var kept []Decision
+	var count int64
+	for _, d := range s.decisions {
+		if d.Archived && d.Timestamp.Before(cutoff) {
+			count++
+			continue
+		}
+		kept = append(kept, d)
+	}
+	s.decisions = kept
+	return count, nil
+}
+
 func (s *MemoryDecisionStore) Export(ctx context.Context, sessionID string, w io.Writer) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

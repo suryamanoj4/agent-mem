@@ -22,6 +22,7 @@ type DecisionStore interface {
 	GetByType(ctx context.Context, sessionID string, decisionType DecisionType) ([]Decision, error)
 	ListSessions(ctx context.Context) ([]SessionSummary, error)
 	Archive(ctx context.Context, sessionID string) (int64, error)
+	PruneEntries(ctx context.Context, olderThan time.Duration) (int64, error)
 	Export(ctx context.Context, sessionID string, w io.Writer) error
 	Close() error
 }
