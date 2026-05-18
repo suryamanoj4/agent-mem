@@ -63,6 +63,12 @@ func main() {
 			sess := decision.NewDecisionSession(sessionID, store, lockMgr)
 
 			fmt.Fprintf(os.Stderr, "Starting agent-memory MCP server for session: %s\n", sessionID)
+			fmt.Fprintf(os.Stderr, `Usage:
+  Before starting work, call get_context(agent_id="<your-id>") to see other agents' decisions.
+  After changes, call decide(agent_id="<your-id>", type="<type>", summary="<what changed>").
+  When user gives preferences, call prefer(summary="<preference>").
+  See full guide: call get_guide().
+`)
 			b := broker.NewMCPBroker("agent-memory", "0.1.0", sess)
 			if err := b.Serve(); err != nil {
 				log.Fatalf("MCP Server error: %v", err)

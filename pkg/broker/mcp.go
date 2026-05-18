@@ -27,28 +27,32 @@ func NewMCPBroker(name, version string, session *decision.DecisionSession) *MCPB
 
 func (b *MCPBroker) registerTools() {
 	b.srv.AddTool(mcp.NewTool("decide",
-		mcp.WithDescription("Store a decision by an agent (architecture, code change, plan, note)."),
-		mcp.WithString("agent_id", mcp.Required(), mcp.Description("The agent making this decision.")),
+		mcp.WithDescription("After completing a task, record what you decided (architecture, code change, plan, or note). Call this after each significant action so other agents can learn from it. Include a diff for code changes."),
+		mcp.WithString("agent_id", mcp.Required(), mcp.Description("Your agent ID (e.g., 'backend-agent').")),
 		mcp.WithString("type", mcp.Required(), mcp.Description("Decision type: architecture, code_change, plan, preference, note.")),
-		mcp.WithString("summary", mcp.Required(), mcp.Description("Brief summary of the decision.")),
-		mcp.WithString("diff", mcp.Description("Optional diff for code changes.")),
+		mcp.WithString("summary", mcp.Required(), mcp.Description("Brief summary of what was decided.")),
+		mcp.WithString("diff", mcp.Description("The actual diff/patch for code changes.")),
 	), b.handleDecide)
 
 	b.srv.AddTool(mcp.NewTool("get_context",
-		mcp.WithDescription("Retrieve decisions from other agents for cross-agent awareness."),
-		mcp.WithString("agent_id", mcp.Required(), mcp.Description("Your agent ID. Your own decisions are excluded.")),
+		mcp.WithDescription("Call this BEFORE starting any work. Retrieves decisions made by other agents and user preferences in this session. Your own decisions are excluded."),
+		mcp.WithString("agent_id", mcp.Required(), mcp.Description("Your agent ID. Your own decisions will be excluded from results.")),
 	), b.handleGetContext)
 
 	b.srv.AddTool(mcp.NewTool("prefer",
-		mcp.WithDescription("Store a user preference or instruction."),
-		mcp.WithString("summary", mcp.Required(), mcp.Description("The user preference or instruction.")),
+		mcp.WithDescription("When the user gives a preference or instruction, call this to store it so all agents respect it. No agent_id needed - this is marked as a user preference."),
+		mcp.WithString("summary", mcp.Required(), mcp.Description("The user's preference or instruction.")),
 	), b.handlePrefer)
 
 	b.srv.AddTool(mcp.NewTool("search_decisions",
-		mcp.WithDescription("Search decisions using natural language keywords."),
-		mcp.WithString("query", mcp.Required(), mcp.Description("The search query.")),
-		mcp.WithString("type", mcp.Description("Filter by decision type.")),
+		mcp.WithDescription("Search through all decisions by keyword. Optionally filter by decision type (architecture, code_change, plan, preference, note)."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("The natural language search query.")),
+		mcp.WithString("type", mcp.Description("Optional: filter results to a specific decision type.")),
 	), b.handleSearch)
+
+	b.srv.AddTool(mcp.NewTool("get_guide",
+		mcp.WithDescription("Returns the full usage guide for agent-memory tools including workflow instructions."),
+	), b.handleGetGuide)
 
 	b.srv.AddTool(mcp.NewTool("get_lock_status",
 		mcp.WithDescription("Check if a file path is currently locked."),
@@ -146,6 +150,33 @@ func (b *MCPBroker) handleSearch(ctx context.Context, request mcp.CallToolReques
 		responseText += fmt.Sprintf("- [%s][%s]: %s\n", d.AgentID, d.DecisionType, d.Content.Summary)
 	}
 	return mcp.NewToolResultText(responseText), nil
+}
+
+func (b *MCPBroker) handleGetGuide(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	guide := `# agent-memory Usage Guide
+
+## Before Starting Work
+Always call get_context(agent_id="<your-agent-id>") to learn what other agents have decided and what the user prefers. This avoids duplicate or conflicting work.
+
+## While Working
+After each significant action (architecture decision, code change, plan update), call:
+  decide(agent_id="<your-agent-id>", type="<type>", summary="<what you did>", diff="<diff if applicable>")
+
+When the user gives a preference or instruction, call:
+  prefer(summary="<the user's preference>")
+
+## Searching
+Search existing decisions with:
+  search_decisions(query="<keywords>", type="<optional filter>")
+
+## File Locking
+Before editing a file, check if locked: get_lock_status(path="<file>")
+If unlocked, claim it: acquire_lock(path="<file>")
+After done editing, release: release_lock(path="<file>")
+
+## Compaction
+Call compact_session when the decision log grows too large to archive old entries.`
+	return mcp.NewToolResultText(guide), nil
 }
 
 func (b *MCPBroker) handleLockStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
