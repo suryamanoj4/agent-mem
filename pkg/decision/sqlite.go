@@ -106,20 +106,35 @@ func (s *SQLiteDecisionStore) Search(ctx context.Context, req SearchRequest) ([]
 	var err error
 
 	if req.Query == "" {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, session_id, agent_id, author_type, content, decision_type, timestamp, archived
-			 FROM decisions WHERE session_id = ? AND archived = 0 ORDER BY timestamp DESC LIMIT ?`,
-			req.SessionID, limit,
-		)
+		q := `SELECT id, session_id, agent_id, author_type, content, decision_type, timestamp, archived
+			  FROM decisions WHERE session_id = ? AND archived = 0`
+		args := []interface{}{req.SessionID}
+
+		if req.ExcludeAgentID != "" {
+			q += ` AND (agent_id != ? OR author_type = 'user')`
+			args = append(args, req.ExcludeAgentID)
+		}
+
+		q += ` ORDER BY timestamp DESC LIMIT ?`
+		args = append(args, limit)
+
+		rows, err = s.db.QueryContext(ctx, q, args...)
 	} else {
-		rows, err = s.db.QueryContext(ctx, `
-			SELECT d.id, d.session_id, d.agent_id, d.author_type, d.content, d.decision_type, d.timestamp, d.archived
-			FROM decisions d
-			JOIN decisions_fts f ON d.id = f.rowid
-			WHERE d.session_id = ? AND d.archived = 0 AND f.content MATCH ?
-			ORDER BY d.timestamp DESC
-			LIMIT ?
-		`, req.SessionID, req.Query, limit)
+		q := `SELECT d.id, d.session_id, d.agent_id, d.author_type, d.content, d.decision_type, d.timestamp, d.archived
+			  FROM decisions d
+			  JOIN decisions_fts f ON d.id = f.rowid
+			  WHERE d.session_id = ? AND d.archived = 0 AND f.content MATCH ?`
+		args := []interface{}{req.SessionID, req.Query}
+
+		if req.ExcludeAgentID != "" {
+			q += ` AND (d.agent_id != ? OR d.author_type = 'user')`
+			args = append(args, req.ExcludeAgentID)
+		}
+
+		q += ` ORDER BY d.timestamp DESC LIMIT ?`
+		args = append(args, limit)
+
+		rows, err = s.db.QueryContext(ctx, q, args...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to search decisions: %w", err)

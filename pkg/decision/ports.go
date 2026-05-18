@@ -7,13 +7,14 @@ import (
 )
 
 type SearchRequest struct {
-	SessionID     string
-	Query         string
-	DecisionTypes []DecisionType
-	AgentID       string
-	AuthorType    AuthorType
-	IncludeArchived bool
-	Limit         int
+	SessionID        string
+	Query            string
+	DecisionTypes    []DecisionType
+	AgentID          string
+	ExcludeAgentID   string
+	AuthorType       AuthorType
+	IncludeArchived  bool
+	Limit            int
 }
 
 type DecisionStore interface {

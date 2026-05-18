@@ -76,12 +76,11 @@ func (s *DecisionSession) GetContext(ctx context.Context) ([]Decision, error) {
 
 	req := SearchRequest{
 		SessionID: s.id,
-		Query:     "",
 		Limit:     50,
 	}
 
 	if caller.AuthorType == AuthorTypeAgent && caller.AgentID != "" {
-		req.DecisionTypes = []DecisionType{DecisionTypePreference}
+		req.ExcludeAgentID = caller.AgentID
 	}
 
 	return s.store.Search(ctx, req)

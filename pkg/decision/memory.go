@@ -62,6 +62,9 @@ func (s *MemoryDecisionStore) Search(ctx context.Context, req SearchRequest) ([]
 		if req.AgentID != "" && d.AgentID != req.AgentID {
 			continue
 		}
+		if req.ExcludeAgentID != "" && d.AgentID == req.ExcludeAgentID && d.AuthorType == AuthorTypeAgent {
+			continue
+		}
 		results = append(results, d)
 		if len(results) >= limit {
 			break
